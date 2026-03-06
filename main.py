@@ -1,29 +1,26 @@
 import os
 import sys
 import uuid
-import tempfile
 import pickle
-import httpx
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, HttpUrl
-
-import whisper
-import numpy as np
+from pydantic import BaseModel
+from faster_whisper import WhisperModel
 
 # ── Paths ────────────────────────────────────────────────────────
-BASE_DIR        = Path(__file__).parent
-MODEL_PATH      = BASE_DIR / "face_landmarker.task"
-RF_MODEL_PATH   = BASE_DIR / "rf_model.pkl"
-SCALER_PATH     = BASE_DIR / "scaler.pkl"
+BASE_DIR          = Path(__file__).parent
+MODEL_PATH        = BASE_DIR / "face_landmarker.task"
+RF_MODEL_PATH     = BASE_DIR / "rf_model.pkl"
+SCALER_PATH       = BASE_DIR / "scaler.pkl"
 OPTIMAL_THRESHOLD = 0.2027
-MAX_FILE_MB     = 50  # max upload size in MB
-MAX_URL_MB      = 50  # max video size from URL
+MAX_FILE_MB       = 50
+MAX_URL_MB        = 50
 
-# ── Load models at startup ───────────────────────────────────────
+# ── Models container ─────────────────────────────────────────────
 ml_models = {}
 
 @asynccontextmanager
@@ -33,7 +30,11 @@ async def lifespan(app: FastAPI):
         ml_models["rf"] = pickle.load(f)
     with open(SCALER_PATH, "rb") as f:
         ml_models["scaler"] = pickle.load(f)
-    ml_models["whisper"] = whisper.load_model("small")
+    ml_models["whisper"] = WhisperModel(
+        "small",
+        device="cpu",
+        compute_type="int8"
+    )
     print("All models loaded.")
     yield
     ml_models.clear()
@@ -45,7 +46,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# ── Import pipeline ──────────────────────────────────────────────
 sys.path.insert(0, str(BASE_DIR))
 from pipeline import run_pipeline
 
@@ -59,11 +59,11 @@ def cleanup_file(path: str):
 
 def run_inference(video_path: str) -> dict:
     return run_pipeline(
-        video_path    = video_path,
-        model_path    = str(MODEL_PATH),
-        rf_model      = ml_models["rf"],
-        scaler        = ml_models["scaler"],
-        whisper_model = ml_models["whisper"],
+        video_path        = video_path,
+        model_path        = str(MODEL_PATH),
+        rf_model          = ml_models["rf"],
+        scaler            = ml_models["scaler"],
+        whisper_model     = ml_models["whisper"],
         optimal_threshold = OPTIMAL_THRESHOLD
     )
 
@@ -92,14 +92,12 @@ async def detect_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
-    # Validate file type
     if not file.filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
         raise HTTPException(
             status_code=400,
             detail="Unsupported file type. Please upload mp4, avi, mov, mkv, or webm."
         )
 
-    # Read and check size
     contents = await file.read()
     size_mb = len(contents) / 1e6
     if size_mb > MAX_FILE_MB:
@@ -108,13 +106,11 @@ async def detect_upload(
             detail=f"File too large: {size_mb:.1f} MB. Maximum allowed: {MAX_FILE_MB} MB."
         )
 
-    # Save to temp file
-    suffix = Path(file.filename).suffix
+    suffix   = Path(file.filename).suffix
     tmp_path = f"/tmp/{uuid.uuid4().hex}{suffix}"
     with open(tmp_path, "wb") as f:
         f.write(contents)
 
-    # Schedule cleanup
     background_tasks.add_task(cleanup_file, tmp_path)
 
     try:
@@ -137,10 +133,9 @@ async def detect_url(
     request: URLRequest,
     background_tasks: BackgroundTasks
 ):
-    url = request.url
-
-    # Validate extension
+    url       = request.url
     path_part = url.split("?")[0].lower()
+
     if not any(path_part.endswith(ext) for ext in
                [".mp4", ".avi", ".mov", ".mkv", ".webm"]):
         raise HTTPException(
@@ -148,7 +143,6 @@ async def detect_url(
             detail="URL must point to a video file (mp4, avi, mov, mkv, webm)."
         )
 
-    # Download video with size limit
     tmp_path = f"/tmp/{uuid.uuid4().hex}.mp4"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -158,7 +152,7 @@ async def detect_url(
                         status_code=400,
                         detail=f"Could not download video. HTTP {response.status_code}"
                     )
-                total = 0
+                total     = 0
                 max_bytes = MAX_URL_MB * 1_000_000
                 with open(tmp_path, "wb") as f:
                     async for chunk in response.aiter_bytes(chunk_size=65536):
@@ -185,6 +179,6 @@ async def detect_url(
 
     return JSONResponse(content={
         "source_url": url,
-        "size_mb": round(os.path.getsize(tmp_path) / 1e6, 2),
+        "size_mb":    round(os.path.getsize(tmp_path) / 1e6, 2),
         **result
     })
