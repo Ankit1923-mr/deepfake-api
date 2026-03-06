@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: deepfake-api
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: |
+      apt-get update && apt-get install -y ffmpeg espeak-ng libgl1 libglib2.0-0
+      pip install --upgrade pip setuptools wheel
+      pip install --no-build-isolation openai-whisper==20231117
+      pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
