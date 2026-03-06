@@ -9,7 +9,6 @@ import httpx
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from faster_whisper import WhisperModel
 
 # ── Paths ────────────────────────────────────────────────────────
 BASE_DIR          = Path(__file__).parent
@@ -30,11 +29,9 @@ async def lifespan(app: FastAPI):
         ml_models["rf"] = pickle.load(f)
     with open(SCALER_PATH, "rb") as f:
         ml_models["scaler"] = pickle.load(f)
-    ml_models["whisper"] = WhisperModel(
-        "tiny",
-        device="cpu",
-        compute_type="int8"
-    )
+    # Groq client — no model loaded in RAM
+    from groq import Groq
+    ml_models["groq"] = Groq(api_key=os.environ.get("GROQ_API_KEY"))
     print("All models loaded.")
     yield
     ml_models.clear()
@@ -63,7 +60,7 @@ def run_inference(video_path: str) -> dict:
         model_path        = str(MODEL_PATH),
         rf_model          = ml_models["rf"],
         scaler            = ml_models["scaler"],
-        whisper_model     = ml_models["whisper"],
+        groq_client       = ml_models["groq"],
         optimal_threshold = OPTIMAL_THRESHOLD
     )
 
@@ -92,32 +89,28 @@ async def detect_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
-    if not file.filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
+    if not file.filename.lower().endswith(
+            (".mp4", ".avi", ".mov", ".mkv", ".webm")):
         raise HTTPException(
             status_code=400,
-            detail="Unsupported file type. Please upload mp4, avi, mov, mkv, or webm."
+            detail="Unsupported file type."
         )
-
     contents = await file.read()
-    size_mb = len(contents) / 1e6
+    size_mb  = len(contents) / 1e6
     if size_mb > MAX_FILE_MB:
         raise HTTPException(
             status_code=413,
-            detail=f"File too large: {size_mb:.1f} MB. Maximum allowed: {MAX_FILE_MB} MB."
+            detail=f"File too large: {size_mb:.1f} MB. Max: {MAX_FILE_MB} MB."
         )
-
     suffix   = Path(file.filename).suffix
     tmp_path = f"/tmp/{uuid.uuid4().hex}{suffix}"
     with open(tmp_path, "wb") as f:
         f.write(contents)
-
     background_tasks.add_task(cleanup_file, tmp_path)
-
     try:
         result = run_inference(tmp_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
-
     return JSONResponse(content={
         "filename": file.filename,
         "size_mb":  round(size_mb, 2),
@@ -135,14 +128,12 @@ async def detect_url(
 ):
     url       = request.url
     path_part = url.split("?")[0].lower()
-
     if not any(path_part.endswith(ext) for ext in
                [".mp4", ".avi", ".mov", ".mkv", ".webm"]):
         raise HTTPException(
             status_code=400,
-            detail="URL must point to a video file (mp4, avi, mov, mkv, webm)."
+            detail="URL must point to a video file."
         )
-
     tmp_path = f"/tmp/{uuid.uuid4().hex}.mp4"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -168,15 +159,16 @@ async def detect_url(
         raise
     except Exception as e:
         cleanup_file(tmp_path)
-        raise HTTPException(status_code=400, detail=f"Download failed: {str(e)}")
-
+        raise HTTPException(
+            status_code=400, detail=f"Download failed: {str(e)}"
+        )
     background_tasks.add_task(cleanup_file, tmp_path)
-
     try:
         result = run_inference(tmp_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
-
+        raise HTTPException(
+            status_code=500, detail=f"Inference failed: {str(e)}"
+        )
     return JSONResponse(content={
         "source_url": url,
         "size_mb":    round(os.path.getsize(tmp_path) / 1e6, 2),

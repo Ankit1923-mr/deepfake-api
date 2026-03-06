@@ -88,37 +88,45 @@ def extract_audio(video_path, out_path):
 
 
 # ── Faster-Whisper transcription ─────────────────────────────────
-def transcribe_audio(wav_path, whisper_model):
+def transcribe_audio(wav_path, groq_client):
     """
-    Transcribe using faster-whisper and return output in the same
-    format as the original openai-whisper so the rest of the pipeline
-    needs no changes.
+    Transcribe using Groq's free Whisper API.
+    Runs in the cloud — zero RAM cost on our server.
     """
-    segments, info = whisper_model.transcribe(
-        wav_path,
-        word_timestamps=True,
-        language="en"
-    )
+    with open(wav_path, "rb") as f:
+        transcription = groq_client.audio.transcriptions.create(
+            file            = (os.path.basename(wav_path), f),
+            model           = "whisper-large-v3-turbo",
+            response_format = "verbose_json",
+            timestamp_granularities = ["word"],
+            language        = "en"
+        )
+
     result_segments = []
-    full_text       = ""
-    for segment in segments:
+    full_text       = transcription.text or ""
+
+    if hasattr(transcription, "words") and transcription.words:
         words = []
-        for word in segment.words:
+        for w in transcription.words:
             words.append({
-                "word":  word.word,
-                "start": word.start,
-                "end":   word.end
+                "word":  w.word,
+                "start": w.start,
+                "end":   w.end
             })
         result_segments.append({
-            "text":  segment.text,
+            "text":  full_text,
             "words": words
         })
-        full_text += segment.text
+    else:
+        result_segments.append({
+            "text":  full_text,
+            "words": []
+        })
+
     return {
         "text":     full_text.strip(),
         "segments": result_segments
     }
-
 
 # ── Phoneme conversion ───────────────────────────────────────────
 def word_to_openness(word):
@@ -307,25 +315,21 @@ def extract_features(lip_curve, phoneme_curve, fps,
 
 # ── Full pipeline ────────────────────────────────────────────────
 def run_pipeline(video_path, model_path, rf_model, scaler,
-                 whisper_model, optimal_threshold=0.2027):
-    """
-    Full inference pipeline for one video.
-    Returns prediction, confidence, fake segments, transcript, features.
-    """
+                 groq_client, optimal_threshold=0.2027):
     # 1. Lip curve
     with load_landmarker(model_path) as landmarker:
         lip_curve, fps, frame_count = extract_lip_curve(
             video_path, landmarker
         )
 
-    # 2. Audio + transcription
+    # 2. Audio + transcription via Groq
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp_wav = tmp.name
     try:
         code = extract_audio(video_path, tmp_wav)
         if code != 0:
             raise RuntimeError("Audio extraction failed")
-        result = transcribe_audio(tmp_wav, whisper_model)
+        result = transcribe_audio(tmp_wav, groq_client)
     finally:
         if os.path.exists(tmp_wav):
             os.remove(tmp_wav)
@@ -356,7 +360,7 @@ def run_pipeline(video_path, model_path, rf_model, scaler,
     pred  = int(rf_model.predict(X)[0])
 
     # 5. Fake segments
-    window_scores          = sliding_window_dtw_scores_v2(
+    window_scores             = sliding_window_dtw_scores_v2(
         lip_curve, phoneme_curve, fps
     )
     fake_segments, fake_ratio = detect_fake_segments(
@@ -368,11 +372,7 @@ def run_pipeline(video_path, model_path, rf_model, scaler,
         "confidence":    round(float(proba), 4),
         "fake_ratio":    round(float(fake_ratio), 4),
         "fake_segments": [
-            {
-                "start": round(s, 2),
-                "end":   round(e, 2),
-                "score": round(sc, 4)
-            }
+            {"start": round(s, 2), "end": round(e, 2), "score": round(sc, 4)}
             for s, e, sc in fake_segments
         ],
         "transcript": result["text"].strip(),
