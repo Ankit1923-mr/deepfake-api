@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     with open(SCALER_PATH, "rb") as f:
         ml_models["scaler"] = pickle.load(f)
     ml_models["whisper"] = WhisperModel(
-        "small",
+        "tiny",
         device="cpu",
         compute_type="int8"
     )
