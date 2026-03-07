@@ -91,7 +91,6 @@ def extract_audio(video_path, out_path):
 def transcribe_audio(wav_path, groq_client):
     """
     Transcribe using Groq's free Whisper API.
-    Runs in the cloud — zero RAM cost on our server.
     """
     with open(wav_path, "rb") as f:
         transcription = groq_client.audio.transcriptions.create(
@@ -102,30 +101,31 @@ def transcribe_audio(wav_path, groq_client):
             language        = "en"
         )
 
-    result_segments = []
-    full_text       = transcription.text or ""
+    full_text = transcription.text or ""
+    words_raw = []
 
+    # Groq returns words as list of dicts, not objects
     if hasattr(transcription, "words") and transcription.words:
-        words = []
         for w in transcription.words:
-            words.append({
-                "word":  w.word,
-                "start": w.start,
-                "end":   w.end
-            })
-        result_segments.append({
-            "text":  full_text,
-            "words": words
-        })
-    else:
-        result_segments.append({
-            "text":  full_text,
-            "words": []
-        })
+            if isinstance(w, dict):
+                words_raw.append({
+                    "word":  w.get("word", ""),
+                    "start": w.get("start", 0.0),
+                    "end":   w.get("end",   0.0)
+                })
+            else:
+                words_raw.append({
+                    "word":  getattr(w, "word",  ""),
+                    "start": getattr(w, "start", 0.0),
+                    "end":   getattr(w, "end",   0.0)
+                })
 
     return {
-        "text":     full_text.strip(),
-        "segments": result_segments
+        "text": full_text.strip(),
+        "segments": [{
+            "text":  full_text,
+            "words": words_raw
+        }]
     }
 
 # ── Phoneme conversion ───────────────────────────────────────────
