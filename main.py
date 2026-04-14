@@ -126,35 +126,59 @@ async def detect_url(
     request: URLRequest,
     background_tasks: BackgroundTasks
 ):
-    url       = request.url
-    path_part = url.split("?")[0].lower()
-    if not any(path_part.endswith(ext) for ext in
-               [".mp4", ".avi", ".mov", ".mkv", ".webm"]):
-        raise HTTPException(
-            status_code=400,
-            detail="URL must point to a video file."
-        )
+    url      = request.url
     tmp_path = f"/tmp/{uuid.uuid4().hex}.mp4"
+    path_part = url.split("?")[0].lower()
+
+    is_direct = any(path_part.endswith(ext) for ext in
+                    [".mp4", ".avi", ".mov", ".mkv", ".webm"])
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream("GET", url) as response:
-                if response.status_code != 200:
+        if is_direct:
+            # Direct video file — download via httpx
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream("GET", url) as response:
+                    if response.status_code != 200:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Could not download video. HTTP {response.status_code}"
+                        )
+                    total     = 0
+                    max_bytes = MAX_URL_MB * 1_000_000
+                    with open(tmp_path, "wb") as f:
+                        async for chunk in response.aiter_bytes(chunk_size=65536):
+                            total += len(chunk)
+                            if total > max_bytes:
+                                cleanup_file(tmp_path)
+                                raise HTTPException(
+                                    status_code=413,
+                                    detail=f"Video exceeds {MAX_URL_MB} MB limit."
+                                )
+                            f.write(chunk)
+        else:
+            # YouTube / social media URL — download via yt-dlp
+            import yt_dlp
+            ydl_opts = {
+                "format":    "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "outtmpl":   tmp_path,
+                "quiet":     True,
+                "no_warnings": True,
+                "merge_output_format": "mp4",
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            if not os.path.exists(tmp_path):
+                # yt-dlp sometimes adds extension even if outtmpl has .mp4
+                guessed = tmp_path.replace(".mp4", "") + ".mp4"
+                if os.path.exists(guessed):
+                    tmp_path = guessed
+                else:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Could not download video. HTTP {response.status_code}"
+                        detail="yt-dlp could not download the video."
                     )
-                total     = 0
-                max_bytes = MAX_URL_MB * 1_000_000
-                with open(tmp_path, "wb") as f:
-                    async for chunk in response.aiter_bytes(chunk_size=65536):
-                        total += len(chunk)
-                        if total > max_bytes:
-                            cleanup_file(tmp_path)
-                            raise HTTPException(
-                                status_code=413,
-                                detail=f"Video exceeds {MAX_URL_MB} MB limit."
-                            )
-                        f.write(chunk)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -162,15 +186,3 @@ async def detect_url(
         raise HTTPException(
             status_code=400, detail=f"Download failed: {str(e)}"
         )
-    background_tasks.add_task(cleanup_file, tmp_path)
-    try:
-        result = run_inference(tmp_path)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Inference failed: {str(e)}"
-        )
-    return JSONResponse(content={
-        "source_url": url,
-        "size_mb":    round(os.path.getsize(tmp_path) / 1e6, 2),
-        **result
-    })
