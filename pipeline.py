@@ -315,7 +315,7 @@ def extract_features(lip_curve, phoneme_curve, fps,
 
 # ── Full pipeline ────────────────────────────────────────────────
 def run_pipeline(video_path, model_path, rf_model, scaler,
-                 groq_client, optimal_threshold=0.45):
+                 groq_client, optimal_threshold=0.2027):
     # 1. Lip curve
     with load_landmarker(model_path) as landmarker:
         lip_curve, fps, frame_count = extract_lip_curve(
