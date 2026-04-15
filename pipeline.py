@@ -359,6 +359,14 @@ def run_pipeline(video_path, model_path, rf_model, scaler,
     proba = rf_model.predict_proba(X)[0][1]
     pred  = int(rf_model.predict(X)[0])
 
+    # Override: if fake_ratio is high, trust it over RF model
+    if features["fake_ratio"] >= 0.6:
+        pred  = 1
+        proba = max(proba, features["fake_ratio"])
+    elif features["fake_ratio"] <= 0.1:
+        pred  = 0
+        proba = min(proba, 1.0 - features["fake_ratio"])
+
     # 5. Fake segments
     window_scores             = sliding_window_dtw_scores_v2(
         lip_curve, phoneme_curve, fps
