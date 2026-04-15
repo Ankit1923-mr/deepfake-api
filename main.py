@@ -16,7 +16,7 @@ BASE_DIR          = Path(__file__).parent
 MODEL_PATH        = BASE_DIR / "face_landmarker.task"
 RF_MODEL_PATH     = BASE_DIR / "rf_model.pkl"
 SCALER_PATH       = BASE_DIR / "scaler.pkl"
-OPTIMAL_THRESHOLD = 0.2027
+OPTIMAL_THRESHOLD = 0.45
 MAX_FILE_MB       = 50
 MAX_URL_MB        = 50
 
