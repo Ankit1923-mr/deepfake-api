@@ -360,6 +360,7 @@ def run_pipeline(video_path, model_path, rf_model, scaler,
     pred  = int(rf_model.predict(X)[0])
 
 
+
     # 5. Fake segments
     window_scores             = sliding_window_dtw_scores_v2(
         lip_curve, phoneme_curve, fps
