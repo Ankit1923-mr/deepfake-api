@@ -315,7 +315,7 @@ def extract_features(lip_curve, phoneme_curve, fps,
 
 # ── Full pipeline ────────────────────────────────────────────────
 def run_pipeline(video_path, model_path, rf_model, scaler,
-                 groq_client, optimal_threshold=0.2027):
+                 groq_client, rf_proba_thresh=0.2264, dtw_seg_thresh=0.45):
     # 1. Lip curve
     with load_landmarker(model_path) as landmarker:
         lip_curve, fps, frame_count = extract_lip_curve(
@@ -344,9 +344,9 @@ def run_pipeline(video_path, model_path, rf_model, scaler,
         else np.zeros(frame_count, dtype=np.float32)
     )
 
-    # 4. Features
+    # 4. Features (Passing DTW threshold for segment extraction)
     features = extract_features(
-        lip_curve, phoneme_curve, fps, optimal_threshold
+        lip_curve, phoneme_curve, fps, optimal_threshold=dtw_seg_thresh
     )
     feature_order = [
         "pearson", "xcorr_peak", "lip_variance", "lip_mad",
@@ -357,16 +357,16 @@ def run_pipeline(video_path, model_path, rf_model, scaler,
     ]
     X     = scaler.transform([[features[k] for k in feature_order]])
     proba = rf_model.predict_proba(X)[0][1]
-    pred  = int(rf_model.predict(X)[0])
+    
+    # Apply optimal ML probability threshold
+    pred  = 1 if proba >= rf_proba_thresh else 0
 
-
-
-    # 5. Fake segments
+    # 5. Fake segments (Passing DTW threshold for signal highlighting)
     window_scores             = sliding_window_dtw_scores_v2(
         lip_curve, phoneme_curve, fps
     )
     fake_segments, fake_ratio = detect_fake_segments(
-        window_scores, threshold=optimal_threshold
+        window_scores, threshold=dtw_seg_thresh
     )
 
     return {

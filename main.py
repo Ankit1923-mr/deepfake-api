@@ -12,13 +12,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # ── Paths ────────────────────────────────────────────────────────
-BASE_DIR          = Path(__file__).parent
-MODEL_PATH        = BASE_DIR / "face_landmarker.task"
-RF_MODEL_PATH     = BASE_DIR / "rf_model.pkl"
-SCALER_PATH       = BASE_DIR / "scaler.pkl"
-OPTIMAL_THRESHOLD = 0.2027
-MAX_FILE_MB       = 50
-MAX_URL_MB        = 50
+BASE_DIR           = Path(__file__).parent
+MODEL_PATH         = BASE_DIR / "face_landmarker.task"
+RF_MODEL_PATH      = BASE_DIR / "rf_model.pkl"
+SCALER_PATH        = BASE_DIR / "scaler.pkl"
+
+# ── Thresholds ───────────────────────────────────────────────────
+RF_PROBA_THRESHOLD = 0.2264  # Optimal ML threshold for classifying video as fake
+DTW_SEG_THRESHOLD  = 0.45    # Signal threshold for highlighting specific fake segments
+MAX_FILE_MB        = 50
+MAX_URL_MB         = 50
 
 # ── Models container ─────────────────────────────────────────────
 ml_models = {}
@@ -66,12 +69,13 @@ def cleanup_file(path: str):
 
 def run_inference(video_path: str) -> dict:
     return run_pipeline(
-        video_path        = video_path,
-        model_path        = str(MODEL_PATH),
-        rf_model          = ml_models["rf"],
-        scaler            = ml_models["scaler"],
-        groq_client       = ml_models["groq"],
-        optimal_threshold = OPTIMAL_THRESHOLD
+        video_path         = video_path,
+        model_path         = str(MODEL_PATH),
+        rf_model           = ml_models["rf"],
+        scaler             = ml_models["scaler"],
+        groq_client        = ml_models["groq"],
+        rf_proba_thresh    = RF_PROBA_THRESHOLD,
+        dtw_seg_thresh     = DTW_SEG_THRESHOLD
     )
 
 # ── Routes ───────────────────────────────────────────────────────
@@ -116,11 +120,14 @@ async def detect_upload(
     tmp_path = f"/tmp/{uuid.uuid4().hex}{suffix}"
     with open(tmp_path, "wb") as f:
         f.write(contents)
+    
     background_tasks.add_task(cleanup_file, tmp_path)
+    
     try:
         result = run_inference(tmp_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
+    
     return JSONResponse(content={
         "filename": file.filename,
         "size_mb":  round(size_mb, 2),
@@ -196,6 +203,18 @@ async def detect_url(
         raise HTTPException(
             status_code=400, detail=f"Download failed: {str(e)}"
         )
+    
+    # Run the ML pipeline
+    background_tasks.add_task(cleanup_file, tmp_path)
+    try:
+        result = run_inference(tmp_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
+        
+    return JSONResponse(content={
+        "source_url": url,
+        **result
+    })
         
 @app.post("/debug/scores")
 async def debug_scores(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
