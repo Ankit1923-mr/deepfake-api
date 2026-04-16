@@ -196,3 +196,22 @@ async def detect_url(
         raise HTTPException(
             status_code=400, detail=f"Download failed: {str(e)}"
         )
+        
+@app.post("/debug/scores")
+async def debug_scores(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    contents = await file.read()
+    tmp_path = f"/tmp/{uuid.uuid4().hex}.mp4"
+    with open(tmp_path, "wb") as f:
+        f.write(contents)
+    background_tasks.add_task(cleanup_file, tmp_path)
+    from pipeline import extract_lip_curve, extract_audio, transcribe_audio, words_to_phoneme_curve, sliding_window_dtw_scores_v2, load_landmarker
+    import tempfile
+    with load_landmarker(str(MODEL_PATH)) as lm:
+        lip_curve, fps, fc = extract_lip_curve(tmp_path, lm)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp_wav = tmp.name
+    extract_audio(tmp_path, tmp_wav)
+    result = transcribe_audio(tmp_wav, ml_models["groq"])
+    ph = words_to_phoneme_curve(result, fc, fps)
+    scores = sliding_window_dtw_scores_v2(lip_curve, ph, fps)
+    return {"window_scores": scores, "fps": fps}
