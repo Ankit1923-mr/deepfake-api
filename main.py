@@ -18,8 +18,8 @@ RF_MODEL_PATH      = BASE_DIR / "rf_model.pkl"
 SCALER_PATH        = BASE_DIR / "scaler.pkl"
 
 # ── Thresholds ───────────────────────────────────────────────────
-RF_PROBA_THRESHOLD = 0.2264  # Optimal ML threshold for classifying video as fake
-DTW_SEG_THRESHOLD  = 0.45    # Signal threshold for highlighting specific fake segments
+RF_PROBA_THRESHOLD = 0.38  # Optimal ML threshold for classifying video as fake
+DTW_SEG_THRESHOLD  = 0.35    # Signal threshold for highlighting specific fake segments
 MAX_FILE_MB        = 50
 MAX_URL_MB         = 50
 
